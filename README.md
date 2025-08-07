@@ -70,3 +70,7 @@ python helper_statistical_comparison.py [path/to/data_with_index.xlsx] [path/to/
 ## Data
 
 Please note that the clinical dataset used for this study contains sensitive patient information and cannot be made publicly available due to privacy regulations and ethical committee restrictions. The code is provided for methodological transparency and reproducibility.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
