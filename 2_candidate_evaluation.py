@@ -1,269 +1,328 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Compare SYNAPSI vs IgG Index on the same TEST set (AJCP style)
+
+- Loads Phase-3 deployment artifact (joblib pkl)
+- Recreates FE and imputes with the artifact's imputer
+- Computes SYNAPSI probabilities and IgG index from raw columns
+- AUCs with 95% CIs (bootstrap), ΔAUC with 95% CI, two-tailed bootstrap p
+- Paired "DeLong" p via bootstrap-covariance approximation
+- Threshold metrics: SYNAPSI at artifact's Youden; IgG at --igg_cutoff (default 0.70)
+- Saves all results to ONE Excel file with multiple sheets (no CSV delimiter pain)
+- AJCP figures: Times New Roman, 600 dpi TIFF, NO titles, NO p text on plots
+"""
+
 import argparse
-import pandas as pd
-import numpy as np
 import os
 import warnings
-import random
+import joblib
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from scipy.stats import norm
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# Matplotlib (AJCP style)
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import roc_auc_score, accuracy_score, recall_score, f1_score, roc_curve, precision_recall_curve, \
-    auc, precision_score
-from sklearn.impute import SimpleImputer
-from sklearn.utils import resample
-import shap
-
-from catboost import CatBoostClassifier
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
-
-# --- AYARLAR ---
-plt.rcParams["savefig.format"] = "tiff";
+plt.rcParams["savefig.format"] = "tiff"
 plt.rcParams["figure.dpi"] = 600
-plt.rcParams["font.family"] = "Times New Roman";
+plt.rcParams["font.family"] = "Times New Roman"
 plt.rcParams["font.size"] = 12
-RANDOM_STATE = 42;
-np.random.seed(RANDOM_STATE);
-random.seed(RANDOM_STATE)
-warnings.filterwarnings("ignore")
-OUTPUT_DIR = "results/Final_Algorithm_Comparison_v2"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(os.path.join(OUTPUT_DIR, "plots"), exist_ok=True)
 
+from sklearn.metrics import (
+    roc_auc_score, roc_curve, precision_recall_curve, auc,
+    accuracy_score, recall_score, precision_score, f1_score
+)
 
-# --- YARDIMCI FONKSİYONLAR ---
+RANDOM_STATE = 42
+np.random.seed(RANDOM_STATE)
 
-def load_and_prepare_data(file_path):
-    data = pd.read_excel(file_path)
-    data = data.loc[:, data.notna().any()]
-    data = data.dropna(subset=['Oligoklonal bant'])
-    data['Oligoklonal bant'] = data['Oligoklonal bant'].astype(int)
-    if 'BOS Total Protein' in data.columns and 'BOS Albumin' in data.columns: data["BOS_Protein_to_BOS_Albumin_Ratio"] = \
-    data['BOS Total Protein'] / (data['BOS Albumin'] + 1e-6)
-    if 'BOS IgG' in data.columns: data["Log_IgG_BOS"] = np.log1p(data['BOS IgG'])
-    if 'Serum IgG' in data.columns: data["Log_Serum_IgG"] = np.log1p(data['Serum IgG'])
-    if 'BOS Sodyum' in data.columns and 'BOS Potasyum' in data.columns: data["Sodium_Potassium_Diff"] = data[
-                                                                                                            'BOS Sodyum'] - \
-                                                                                                        data[
-                                                                                                            'BOS Potasyum']
-    if 'BOS Glukoz' in data.columns and 'BOS Total Protein' in data.columns: data["Glucose_to_Protein_Ratio"] = data[
-                                                                                                                    'BOS Glukoz'] / (
-                                                                                                                            data[
-                                                                                                                                'BOS Total Protein'] + 1e-6)
-    if 'BOS Albumin' in data.columns and 'Serum Albumin' in data.columns: data["CSF_Serum_Albumin_Ratio"] = data[
-                                                                                                                "BOS Albumin"] / (
-                                                                                                                        data[
-                                                                                                                            "Serum Albumin"] + 1e-6)
-    if "YAŞ" in data.columns: data.rename(columns={"YAŞ": "YAS"}, inplace=True)
-    print("✅ Data loading and feature engineering completed.")
-    return data
+# -------- Phase-3 feature set --------
+SELECTED_FEATURES = [
+    "Log_IgG_BOS", "YAS", "BOS_Protein_to_BOS_Albumin_Ratio",
+    "Log_Serum_IgG", "Sodium_Potassium_Diff", "CRP",
+    "Glucose_to_Protein_Ratio", "CSF_Serum_Albumin_Ratio"
+]
 
+def feature_engineering_phase3(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if "Oligoklonal bant" not in df.columns:
+        raise ValueError("Missing target column 'Oligoklonal bant' in TEST file.")
+    df = df.dropna(subset=["Oligoklonal bant"]).copy()
+    df["Oligoklonal bant"] = df["Oligoklonal bant"].astype(int)
 
-# ⭐️ GÜNCELLENDİ: PR-AUC eklendi
-def get_bootstrap_metric_distributions(y_true, y_pred_prob, n_iterations=1000):
-    y_true, y_pred_prob = np.array(y_true), np.array(y_pred_prob)
-    metric_scores = {
-        "ROC-AUC": [], "PR-AUC": [], "Accuracy": [], "Sensitivity": [], "Specificity": [],
-        "Precision (Positive)": [], "Precision (Negative)": [], "F1 (Positive)": [], "F1 (Negative)": []
-    }
-    for _ in range(n_iterations):
-        indices = resample(np.arange(len(y_true)), replace=True, random_state=None)
-        if len(np.unique(y_true[indices])) < 2: continue
-        y_true_boot, y_pred_prob_boot = y_true[indices], y_pred_prob[indices]
+    # Drop obvious IDs/leak columns if present
+    for col in ["Hasta No", "Protokol No", "BOS IgG indeksi"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
 
-        fpr, tpr, thresholds = roc_curve(y_true_boot, y_pred_prob_boot)
-        optimal_threshold = thresholds[np.argmax(tpr - fpr)]
-        y_pred_boot = (y_pred_prob_boot >= optimal_threshold).astype(int)
+    # FE (same as Phase-3)
+    if "BOS Total Protein" in df.columns and "BOS Albumin" in df.columns:
+        df["BOS_Protein_to_BOS_Albumin_Ratio"] = df["BOS Total Protein"] / (df["BOS Albumin"] + 1e-6)
+    if "BOS IgG" in df.columns:
+        df["Log_IgG_BOS"] = np.log1p(df["BOS IgG"])
+    if "Serum IgG" in df.columns:
+        df["Log_Serum_IgG"] = np.log1p(df["Serum IgG"])
+    if "BOS Sodyum" in df.columns and "BOS Potasyum" in df.columns:
+        df["Sodium_Potassium_Diff"] = df["BOS Sodyum"] - df["BOS Potasyum"]
+    if "BOS Glukoz" in df.columns and "BOS Total Protein" in df.columns:
+        df["Glucose_to_Protein_Ratio"] = df["BOS Glukoz"] / (df["BOS Total Protein"] + 1e-6)
+    if "BOS Albumin" in df.columns and "Serum Albumin" in df.columns:
+        df["CSF_Serum_Albumin_Ratio"] = df["BOS Albumin"] / (df["Serum Albumin"] + 1e-6)
+    if "YAŞ" in df.columns and "YAS" not in df.columns:
+        df = df.rename(columns={"YAŞ": "YAS"})
 
-        # PR-AUC hesaplaması
-        precision, recall, _ = precision_recall_curve(y_true_boot, y_pred_prob_boot)
-        metric_scores["PR-AUC"].append(auc(recall, precision))
+    # Drop fully-empty columns (if any)
+    df = df.loc[:, df.notna().any(axis=0)]
 
-        metric_scores["ROC-AUC"].append(roc_auc_score(y_true_boot, y_pred_prob_boot))
-        precision, recall, _ = precision_recall_curve(y_true_boot, y_pred_prob_boot)
-        metric_scores["Accuracy"].append(accuracy_score(y_true_boot, y_pred_boot))
-        metric_scores["Sensitivity"].append(recall_score(y_true_boot, y_pred_boot, pos_label=1, zero_division=0))
-        metric_scores["Specificity"].append(recall_score(y_true_boot, y_pred_boot, pos_label=0, zero_division=0))
-        metric_scores["F1 (Positive)"].append(f1_score(y_true_boot, y_pred_boot, pos_label=1, zero_division=0))
-        metric_scores["F1 (Negative)"].append(f1_score(y_true_boot, y_pred_boot, pos_label=0, zero_division=0))
-        metric_scores["Precision (Positive)"].append(
-            precision_score(y_true_boot, y_pred_boot, pos_label=1, zero_division=0))
-        metric_scores["Precision (Negative)"].append(
-            precision_score(y_true_boot, y_pred_boot, pos_label=0, zero_division=0))
+    missing = [c for c in SELECTED_FEATURES if c not in df.columns]
+    if missing:
+        raise ValueError(f"After FE, missing required features: {missing}")
 
-    for key in metric_scores: metric_scores[key] = np.array(metric_scores[key])
-    return metric_scores
+    return df
 
+# -------- IgG index --------
+def compute_igg_index(df: pd.DataFrame,
+                      csf_igg_col="BOS IgG", serum_igg_col="Serum IgG",
+                      csf_alb_col="BOS Albumin", serum_alb_col="Serum Albumin") -> np.ndarray:
+    for c in [csf_igg_col, serum_igg_col, csf_alb_col, serum_alb_col]:
+        if c not in df.columns:
+            raise ValueError(f"IgG index needs column: '{c}'")
 
-def format_ci_string(scores):
-    mean, lower, upper = np.mean(scores), np.percentile(scores, 2.5), np.percentile(scores, 97.5)
-    return f"{mean:.3f} ({lower:.3f}–{upper:.3f})"
+    csf_igg = df[csf_igg_col].astype(float).values
+    ser_igg = df[serum_igg_col].astype(float).values
+    csf_alb = df[csf_alb_col].astype(float).values
+    ser_alb = df[serum_alb_col].astype(float).values
 
+    # IgG index = (CSF IgG / Serum IgG) / (CSF Alb / Serum Alb)
+    eps = 1e-12
+    igg_index = (csf_igg * ser_alb) / ((ser_igg + eps) * (csf_alb + eps))
+    return igg_index
 
-def perform_statistical_tests(bootstrap_scores_dict):
-    models = list(bootstrap_scores_dict.keys())
-    p_values_data = []
-    print("\n--- Pairwise Statistical Significance (p-values for ROC-AUC) ---")
-    for i in range(len(models)):
-        for j in range(i + 1, len(models)):
-            model1, model2 = models[i], models[j]
-            scores1, scores2 = bootstrap_scores_dict[model1]["ROC-AUC"], bootstrap_scores_dict[model2]["ROC-AUC"]
-            diff_scores = scores1 - scores2
-            p_value = 2 * np.mean(diff_scores < 0) if np.mean(diff_scores) > 0 else 2 * np.mean(diff_scores > 0)
-            p_value_str = "< 0.001" if p_value == 0 else f"{p_value:.4f}"
-            print(f"{model1} vs {model2}: p = {p_value_str}")
-            p_values_data.append({"Comparison": f"{model1} vs {model2}", "p-value": p_value_str})
-    return pd.DataFrame(p_values_data)
+# -------- Bootstrap helpers --------
+def bootstrap_auc(y, scores, B=2000, seed=RANDOM_STATE):
+    rng = np.random.default_rng(seed)
+    aucs = []
+    n = len(y)
+    idx = np.arange(n)
+    for _ in range(B):
+        b = rng.integers(0, n, n)
+        if len(np.unique(y[b])) < 2:
+            continue
+        aucs.append(roc_auc_score(y[b], scores[b]))
+    aucs = np.array(aucs)
+    return aucs, float(np.mean(aucs)), float(np.percentile(aucs, 2.5)), float(np.percentile(aucs, 97.5))
 
+def bootstrap_auc_diff(y, s1, s2, B=2000, seed=RANDOM_STATE):
+    rng = np.random.default_rng(seed)
+    diffs = []
+    n = len(y)
+    for _ in range(B):
+        b = rng.integers(0, n, n)
+        if len(np.unique(y[b])) < 2:
+            continue
+        a1 = roc_auc_score(y[b], s1[b])
+        a2 = roc_auc_score(y[b], s2[b])
+        diffs.append(a1 - a2)
+    diffs = np.array(diffs)
+    prop_pos = (diffs >= 0).mean()
+    p_two = 2 * min(prop_pos, 1 - prop_pos)
+    return (diffs,
+            float(np.mean(diffs)),
+            float(np.percentile(diffs, 2.5)),
+            float(np.percentile(diffs, 97.5)),
+            float(p_two))
 
-def plot_cv_boxplots(cv_results_df):
-    plt.figure(figsize=(10, 6));
-    sns.boxplot(data=cv_results_df, palette="viridis");
-    sns.stripplot(data=cv_results_df, color=".25")
-    plt.ylabel("ROC-AUC Score");
-    plt.xlabel("Model");
-    plt.title("Distribution of Model Performance Across 5 Folds")
-    plt.tight_layout();
-    plt.savefig(os.path.join(OUTPUT_DIR, "plots", "cv_performance_boxplot.tiff"));
-    plt.show()
+def delong_paired_test(y_true, s1, s2, Bcov=2000, seed=RANDOM_STATE):
+    """Paired 'DeLong' p via bootstrap-covariance approximation."""
+    rng = np.random.default_rng(seed)
+    diffs = []
+    n = len(y_true)
+    for _ in range(Bcov):
+        b = rng.integers(0, n, n)
+        if len(np.unique(y_true[b])) < 2:
+            continue
+        diffs.append(roc_auc_score(y_true[b], s1[b]) - roc_auc_score(y_true[b], s2[b]))
+    diffs = np.array(diffs)
+    m = diffs.mean()
+    s = diffs.std(ddof=1)
+    if s == 0:
+        return float(m), 1.0
+    z = m / (s + 1e-12)
+    p = 2 * (1 - norm.cdf(abs(z)))
+    return float(m), float(p)
 
-
-def plot_all_roc_curves(roc_data):
-    plt.figure(figsize=(8, 7))
-    for name, data in roc_data.items(): plt.plot(data['fpr'], data['tpr'], lw=2,
-                                                 label=f"{name} (AUC = {data['auc']:.3f})")
-    plt.plot([0, 1], [0, 1], 'k--', lw=2, label='Chance (AUC = 0.50)');
-    plt.xlabel("False Positive Rate");
-    plt.ylabel("True Positive Rate (Sensitivity)")
-    plt.title("Comparison of ROC Curves for All Models");
-    plt.legend(loc="lower right");
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout();
-    plt.savefig(os.path.join(OUTPUT_DIR, "plots", "all_models_roc_curves.tiff"));
-    plt.show()
-
-
-# ⭐️ GÜNCELLENDİ: `display_names_map` argümanı eklendi
-def plot_shap_comparisons(models, X, y, feature_names, display_names_map):
-    fig, axes = plt.subplots(1, len(models), figsize=(20, 7))
-    if len(models) == 1: axes = [axes]
-    print("\n--- Generating Comparative SHAP Plots ---")
-    for ax, (name, model) in zip(axes, models.items()):
-        model.fit(X, y);
-        explainer = shap.TreeExplainer(model);
-        shap_values = explainer.shap_values(X)
-        if isinstance(shap_values, list): shap_values = shap_values[1]
-        mean_abs_shap = np.abs(shap_values).mean(0)
-        shap_df = pd.DataFrame({'Feature': feature_names, 'SHAP Value': mean_abs_shap})
-        shap_df['Feature'] = shap_df['Feature'].map(display_names_map)
-
-        shap_df = shap_df.sort_values(by='SHAP Value', ascending=False).head(10)
-        sns.barplot(x='SHAP Value', y='Feature', data=shap_df, ax=ax, palette='viridis')
-        ax.set_title(f"{name} Feature Importance");
-        ax.set_xlabel("Mean Absolute SHAP Value")
-
-    axes[0].set_ylabel("Features");
-    for ax in axes[1:]: ax.set_ylabel("")
-    fig.suptitle("Side-by-Side Comparison of Global Feature Importances (SHAP)", fontsize=16)
-    fig.tight_layout(rect=[0, 0, 1, 0.95]);
-    plt.savefig(os.path.join(OUTPUT_DIR, "plots", "comparative_shap_summary.tiff"));
-    plt.show()
-
-
-# --- ANA İŞ AKIŞI ---
-
-def advanced_compare_algorithms(file_path):
-    data = load_and_prepare_data(file_path)
-    selected_features = ['Log_IgG_BOS', 'YAS', "BOS_Protein_to_BOS_Albumin_Ratio", 'Log_Serum_IgG',
-                         'Sodium_Potassium_Diff', 'CRP', 'Glucose_to_Protein_Ratio', 'CSF_Serum_Albumin_Ratio']
-
-    feature_display_names = {
-        'Log_IgG_BOS': 'log(CSF IgG)',
-        'YAS': 'Age',
-        'BOS_Protein_to_BOS_Albumin_Ratio': 'CSF Protein / Albumin Ratio',
-        'Log_Serum_IgG': 'log(Serum IgG)',
-        'Sodium_Potassium_Diff': 'CSF Sodium-Potassium Diff.',
-        'CRP': 'C-Reactive Protein (CRP)',
-        'Glucose_to_Protein_Ratio': 'CSF Glucose / Protein Ratio',
-        'CSF_Serum_Albumin_Ratio': 'CSF / Serum Albumin Ratio'
-    }
-
-    X = data[selected_features];
-    y = data['Oligoklonal bant']
-    imputer = SimpleImputer(strategy='median')
-    X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=selected_features)
-
-    models = {
-        "XGBoost": XGBClassifier(n_estimators=263, max_depth=3, learning_rate=0.06, subsample=0.8, colsample_bytree=0.8,
-                                 random_state=RANDOM_STATE, use_label_encoder=False, eval_metric='logloss'),
-        "LightGBM": LGBMClassifier(n_estimators=150, max_depth=4, learning_rate=0.05, num_leaves=30, subsample=0.7,
-                                   colsample_bytree=0.7, random_state=RANDOM_STATE, deterministic=True,
-                                   force_row_wise=True),
-        "CatBoost": CatBoostClassifier(iterations=400, depth=4, learning_rate=0.08, l2_leaf_reg=3.0,
-                                       random_seed=RANDOM_STATE, verbose=0)
-    }
-
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    all_results, cv_results_df, bootstrap_scores_dict, roc_data = [], pd.DataFrame(), {}, {}
-
-    for name, model in models.items():
-        print(f"--- Evaluating {name} using 5-Fold Cross-Validation ---")
-        y_true_cv, y_pred_prob_cv, cv_fold_scores = [], [], []
-
-        for train_idx, test_idx in cv.split(X_imputed, y):
-            X_train, X_test = X_imputed.iloc[train_idx], X_imputed.iloc[test_idx]
-            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
-            model.fit(X_train, y_train)
-            y_pred_prob_cv.extend(model.predict_proba(X_test)[:, 1])
-            y_true_cv.extend(y_test)
-            cv_fold_scores.append(roc_auc_score(y_test, model.predict_proba(X_test)[:, 1]))
-
-        cv_results_df[name] = cv_fold_scores
-        print(f"Calculating bootstrap metrics for {name}...")
-        bootstrap_distributions = get_bootstrap_metric_distributions(y_true_cv, y_pred_prob_cv)
-        bootstrap_scores_dict[name] = bootstrap_distributions
-        result_row = {'Model': name}
-        for metric_name, scores in bootstrap_distributions.items(): result_row[metric_name] = format_ci_string(scores)
-        all_results.append(result_row)
-
-        fpr, tpr, _ = roc_curve(y_true_cv, y_pred_prob_cv)
-        roc_data[name] = {'fpr': fpr, 'tpr': tpr, 'auc': np.mean(bootstrap_distributions["ROC-AUC"])}
-
-    results_df = pd.DataFrame(all_results)
-    ordered_cols = ['Model', 'ROC-AUC', 'PR-AUC', 'Accuracy', 'Sensitivity', 'Specificity', 'Precision (Positive)',
-                    'Precision (Negative)', 'F1 (Positive)',
-                    'F1 (Negative)']
-    results_df = results_df[ordered_cols]
-
-    print("\n--- Advanced Algorithm Comparison (5-Fold CV with 95% CI) ---")
-    print(results_df.to_string(index=False))
-
-    excel_path = os.path.join(OUTPUT_DIR, "advanced_algorithm_comparison.xlsx")
-    results_df.to_excel(excel_path, index=False)
-    print(f"\n✅ Main comparison report saved to: {excel_path}")
-
-    p_values_df = perform_statistical_tests(bootstrap_scores_dict)
-    p_values_df.to_excel(os.path.join(OUTPUT_DIR, "statistical_tests.xlsx"), index=False)
-    print(f"✅ Statistical test results saved.")
-
-    plot_cv_boxplots(cv_results_df)
-    plot_all_roc_curves(roc_data)
-    # ⭐️ GÜNCELLENDİ: İsim haritası fonksiyona gönderiliyor
-    plot_shap_comparisons(models, X_imputed, y, selected_features, feature_display_names)
-
-
-if __name__ == '__main__':
-    # Komut satırından argüman almak için bir parser oluştur
-    parser = argparse.ArgumentParser(
-        description="Compare ML algorithms for OCB prediction."
-    )
-    parser.add_argument(
-        "input_file",
-        type=str,
-        help="Path to the input Excel data file (e.g., book4.xlsx)"
+# -------- Metrics at threshold --------
+def metrics_at(y, scores, thr: float):
+    yhat = (scores >= thr).astype(int)
+    return dict(
+        Accuracy=accuracy_score(y, yhat),
+        Sensitivity=recall_score(y, yhat, pos_label=1, zero_division=0),
+        Specificity=recall_score(y, yhat, pos_label=0, zero_division=0),
+        Precision_Pos=precision_score(y, yhat, pos_label=1, zero_division=0),
+        Precision_Neg=precision_score(y, yhat, pos_label=0, zero_division=0),
+        F1_Pos=f1_score(y, yhat, pos_label=1, zero_division=0),
+        F1_Neg=f1_score(y, yhat, pos_label=0, zero_division=0),
     )
 
-    args = parser.parse_args()
+# -------- AJCP plots (NO titles, NO p text) --------
+def plot_roc(y, s_syn, s_igg, out_path):
+    fpr1, tpr1, _ = roc_curve(y, s_syn)
+    fpr2, tpr2, _ = roc_curve(y, s_igg)
+    auc1 = roc_auc_score(y, s_syn)
+    auc2 = roc_auc_score(y, s_igg)
 
-    # Ana fonksiyonu, komut satırından gelen dosya yolu ile çağır
-    screen_algorithms_and_interpret(file_path=args.input_file)
+    plt.figure(figsize=(6, 6))
+    plt.plot(fpr1, tpr1, lw=2, label=f"SYNAPSI (AUC = {auc1:.3f})")
+    plt.plot(fpr2, tpr2, lw=2, label=f"IgG Index (AUC = {auc2:.3f})")
+    plt.plot([0, 1], [0, 1], "k--", lw=1)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.legend(loc="lower right", frameon=False)
+    plt.grid(False)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=600)
+    plt.close()
+
+def plot_pr(y, s_syn, s_igg, out_path):
+    p1, r1, _ = precision_recall_curve(y, s_syn)
+    p2, r2, _ = precision_recall_curve(y, s_igg)
+    a1 = auc(r1, p1); a2 = auc(r2, p2)
+
+    plt.figure(figsize=(6, 6))
+    plt.plot(r1, p1, lw=2, label=f"SYNAPSI (AUC = {a1:.3f})")
+    plt.plot(r2, p2, lw=2, label=f"IgG Index (AUC = {a2:.3f})")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.legend(loc="lower left", frameon=False)
+    plt.grid(False)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=600)
+    plt.close()
+
+# -------- Main --------
+def main():
+    ap = argparse.ArgumentParser(description="Compare SYNAPSI (artifact) vs IgG index on the same TEST set.")
+    ap.add_argument("--artifact", required=True, help="Path to SYNAPSI_deployment_model_AJCP.pkl")
+    ap.add_argument("--test_file", required=True, help="Path to TEST Excel (same split as Phase-3 test)")
+    ap.add_argument("--sheet_name", default=0, help="Excel sheet name or index")
+    ap.add_argument("--outdir", default="results/SYNAPSI_vs_IgG_AJCP", help="Output directory")
+    # IgG columns (override if your headers differ)
+    ap.add_argument("--csf_igg_col", default="BOS IgG")
+    ap.add_argument("--serum_igg_col", default="Serum IgG")
+    ap.add_argument("--csf_alb_col", default="BOS Albumin")
+    ap.add_argument("--serum_alb_col", default="Serum Albumin")
+    # IgG decision threshold (default 0.70)
+    ap.add_argument("--igg_cutoff", type=float, default=0.70)
+    args = ap.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+
+    # 1) Load artifact
+    art = joblib.load(args.artifact)
+    model = art["model"]
+    imputer = art["imputer"]
+    feats = art["features"]
+    thresholds = art.get("thresholds", {})
+    syn_thr = float(thresholds.get("Youden_stable", 0.5))
+
+    # 2) Read TEST & FE
+    raw = pd.read_excel(args.test_file, sheet_name=args.sheet_name)
+    df = feature_engineering_phase3(raw)
+
+    # 3) Prepare X,y and impute
+    y = df["Oligoklonal bant"].values.astype(int)
+    X = df[feats].copy()
+    X_imp = pd.DataFrame(imputer.transform(X), columns=feats)
+
+    # 4) SYNAPSI scores
+    syn_scores = model.predict_proba(X_imp)[:, 1]
+
+    # 5) IgG index
+    igg_index = compute_igg_index(
+        df,
+        csf_igg_col=args.csf_igg_col,
+        serum_igg_col=args.serum_igg_col,
+        csf_alb_col=args.csf_alb_col,
+        serum_alb_col=args.serum_alb_col
+    )
+
+    # 6) AUCs
+    auc_syn = roc_auc_score(y, syn_scores)
+    auc_igg = roc_auc_score(y, igg_index)
+
+    # 7) Bootstrap CIs
+    _, syn_mean, syn_lo, syn_hi = bootstrap_auc(y, syn_scores, B=2000, seed=RANDOM_STATE)
+    _, igg_mean, igg_lo, igg_hi = bootstrap_auc(y, igg_index, B=2000, seed=RANDOM_STATE)
+
+    # 8) ΔAUC + bootstrap p
+    _, d_mean, d_lo, d_hi, p_boot = bootstrap_auc_diff(y, syn_scores, igg_index, B=2000, seed=RANDOM_STATE)
+
+    # 9) Paired DeLong (bootstrap-cov approx)
+    _, p_delong = delong_paired_test(y, syn_scores, igg_index, Bcov=2000, seed=RANDOM_STATE)
+
+    # 10) Threshold metrics
+    m_syn = metrics_at(y, syn_scores, syn_thr)
+    m_igg = metrics_at(y, igg_index, args.igg_cutoff)
+
+    # 11) Save Excel (multiple sheets — no “single line” problems)
+    xlsx_path = os.path.join(args.outdir, "syn_vs_igg_results.xlsx")
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        pd.DataFrame([{
+            "AUC_SYN": round(auc_syn, 3),
+            "AUC_SYN_CI_low": round(syn_lo, 3),
+            "AUC_SYN_CI_high": round(syn_hi, 3),
+            "AUC_IgG": round(auc_igg, 3),
+            "AUC_IgG_CI_low": round(igg_lo, 3),
+            "AUC_IgG_CI_high": round(igg_hi, 3),
+            "Delta_AUC_SYN_minus_IgG": round(d_mean, 3),
+            "Delta_CI_low": round(d_lo, 3),
+            "Delta_CI_high": round(d_hi, 3),
+            "Bootstrap_p_two_tailed": round(p_boot, 3),
+            "Paired_DeLong_p": round(p_delong, 3)
+        }]).to_excel(writer, sheet_name="AUC_Comparison", index=False)
+
+        thr_df = pd.DataFrame([
+            {"Model": "SYNAPSI", "Threshold": syn_thr, **{k: round(v, 3) for k, v in m_syn.items()}},
+            {"Model": "IgG Index", "Threshold": args.igg_cutoff, **{k: round(v, 3) for k, v in m_igg.items()}},
+        ])
+        thr_df.to_excel(writer, sheet_name="Threshold_Metrics", index=False)
+
+        pd.DataFrame({
+            "y_true": y,
+            "SYNAPSI_prob": syn_scores,
+            "IgG_index": igg_index
+        }).to_excel(writer, sheet_name="Predictions", index=False)
+
+        meta = pd.DataFrame([{
+            "artifact": args.artifact,
+            "test_file": args.test_file,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "syn_threshold_used": syn_thr,
+            "igg_cutoff_used": args.igg_cutoff,
+            "B_bootstrap": 2000
+        }])
+        meta.to_excel(writer, sheet_name="Info", index=False)
+
+    # 12) Figures (AJCP compliant)
+    plot_roc(y, syn_scores, igg_index, os.path.join(args.outdir, "roc_syn_vs_igg.tiff"))
+    plot_pr(y, syn_scores, igg_index, os.path.join(args.outdir, "pr_syn_vs_igg.tiff"))
+
+    # 13) Console summary
+    print("\n✅ Done")
+    print(f" AUC_SYN  = {auc_syn:.3f}  [{syn_lo:.3f}, {syn_hi:.3f}]")
+    print(f" AUC_IgG  = {auc_igg:.3f}  [{igg_lo:.3f}, {igg_hi:.3f}]")
+    print(f" ΔAUC (SYN−IgG) = {d_mean:.3f}  [{d_lo:.3f}, {d_hi:.3f}]")
+    print(f" Bootstrap p (two-tailed) = {p_boot:.3f}")
+    print(f" Paired 'DeLong' p (bootstrap-cov approx) = {p_delong:.3f}")
+    print(f" Excel: {xlsx_path}")
+    print(" Figures: roc_syn_vs_igg.tiff, pr_syn_vs_igg.tiff")
+
+if __name__ == "__main__":
+    main()
