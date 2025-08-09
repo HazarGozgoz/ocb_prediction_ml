@@ -206,9 +206,24 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Data files
+# Veri dosyaları
 *.xlsx
 *.csv
+
+# Sonuçlar klasörü
+results/
+
+# Python'un oluşturduğu geçici dosyalar
+__pycache__/
+*.pyc
+
+# Sanal ortam klasörleri (eğer kullanıyorsanız)
+venv/
+.venv/
+
+# IDE konfigürasyon dosyaları
+.idea/
+*.DS_Store
 
 # IDE ve OS dosyaları (Python .gitignore şablonunda zaten vardır)
 __pycache__/
