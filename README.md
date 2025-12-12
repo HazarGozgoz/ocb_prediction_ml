@@ -33,39 +33,54 @@ Ensure you have Python 3.11+ installed. Install the required dependencies using:
 
 ```bash
 pip install -r requirements.txt
+```
 
-💻 Usage
-To reproduce the study pipeline, run the scripts in the following order. > Note: Please update the file paths inside the scripts (e.g., path/to/data.xlsx) to match your local directory structure.
+## 💻 Usage
 
-Step 1: Data Preparation
+To reproduce the study pipeline, run the scripts in the following order.
+*> Note: Please update the file paths inside the scripts (e.g., `path/to/data.xlsx`) to match your local directory structure.*
+
+### Step 1: Data Preparation
 Calculate the IgG Index (if not already present in your dataset):
+```bash
 python helper_add_igg_index.py
+```
 
-Step 2: Model Screening
+### Step 2: Model Screening
 Screen various algorithms to find the best baselines:
+```bash
 python 1_initial_model_screening.py
+```
 
-Step 3: Candidate Evaluation
+### Step 3: Candidate Evaluation
 Refine and analyze the top candidates:
+```bash
 python 2_candidate_evaluation.py
+```
 
-Step 4: Final Model (SYNAPSI)
+### Step 4: Final Model (SYNAPSI)
 Train, optimize, and validate the final ensemble model:
+```bash
 python 3_final_ensemble_model.py
+```
 
-Step 5: Statistical Comparison
+### Step 5: Statistical Comparison
 Compare the model's performance against the conventional IgG Index:
+```bash
 python helper_statistical_comparison.py
+```
 
-📊 Data Availability
-The clinical dataset used in this study contains sensitive patient information and cannot be made publicly available due to privacy regulations and ethical committee restrictions.
+## 📊 Data Availability
+The clinical dataset used in this study contains sensitive patient information and **cannot be made publicly available** due to privacy regulations and ethical committee restrictions. 
 
-However, this repository provides the full methodological pipeline. Researchers can replicate the study by formatting their own private datasets to match the feature columns described in the code (e.g., CSF_Protein, Serum_IgG, Albumin_Quotient, etc.).
+However, this repository provides the full methodological pipeline. Researchers can replicate the study by formatting their own private datasets to match the feature columns described in the code (e.g., `CSF_Protein`, `Serum_IgG`, `Albumin_Quotient`, etc.).
 
-📝 Citation
+## 📝 Citation
+
 If you use this code or methodology in your research, please cite our paper:
 
-BibTeX:
+**BibTeX:**
+```bibtex
 @article{Gozgoz2025OCB,
   title={A machine learning model for predicting oligoclonal band positivity using routine cerebrospinal fluid and serum biochemical markers},
   author={Gözgöz, Hazar and Orhan, O. and Konuk, B. Akan and Akan, P.},
@@ -74,10 +89,10 @@ BibTeX:
   publisher={Oxford University Press},
   doi={10.1093/ajcp/aqaf119} 
 }
+```
 
-APA:
+**APA:**
+> Gözgöz, H., Orhan, O., Konuk, B. A., & Akan, P. (2025). A machine learning model for predicting oligoclonal band positivity using routine cerebrospinal fluid and serum biochemical markers. *American Journal of Clinical Pathology*.
 
-Gözgöz, H., Orhan, O., Konuk, B. A., & Akan, P. (2025). A machine learning model for predicting oligoclonal band positivity using routine cerebrospinal fluid and serum biochemical markers. American Journal of Clinical Pathology.
-
-📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
+## 📄 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
