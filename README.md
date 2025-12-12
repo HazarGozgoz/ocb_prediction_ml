@@ -2,7 +2,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Published in AJCP](https://img.shields.io/badge/Published%20in-AJCP-red)](https://10.1093/ajcp/aqaf119)
+[![Published in AJCP](https://img.shields.io/badge/Published%20in-AJCP-red)](https://doi.org/10.1093/ajcp/aqaf119)
 
 ## 📌 Overview
 This repository contains the official implementation of the machine learning pipeline described in the paper: **"A Machine Learning Model for Predicting Oligoclonal Band Positivity Using Routine Cerebrospinal Fluid and Serum Biochemical Markers"**, published in the *American Journal of Clinical Pathology (AJCP)*.
