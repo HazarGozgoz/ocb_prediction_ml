@@ -33,39 +33,30 @@ Ensure you have Python 3.11+ installed. Install the required dependencies using:
 
 ```bash
 pip install -r requirements.txt
+
 💻 Usage
 To reproduce the study pipeline, run the scripts in the following order. > Note: Please update the file paths inside the scripts (e.g., path/to/data.xlsx) to match your local directory structure.
 
 Step 1: Data Preparation
 Calculate the IgG Index (if not already present in your dataset):
-
-Bash
-
 python helper_add_igg_index.py
+
 Step 2: Model Screening
 Screen various algorithms to find the best baselines:
-
-Bash
-
 python 1_initial_model_screening.py
+
 Step 3: Candidate Evaluation
 Refine and analyze the top candidates:
-
-Bash
-
 python 2_candidate_evaluation.py
+
 Step 4: Final Model (SYNAPSI)
 Train, optimize, and validate the final ensemble model:
-
-Bash
-
 python 3_final_ensemble_model.py
+
 Step 5: Statistical Comparison
 Compare the model's performance against the conventional IgG Index:
-
-Bash
-
 python helper_statistical_comparison.py
+
 📊 Data Availability
 The clinical dataset used in this study contains sensitive patient information and cannot be made publicly available due to privacy regulations and ethical committee restrictions.
 
@@ -75,17 +66,15 @@ However, this repository provides the full methodological pipeline. Researchers 
 If you use this code or methodology in your research, please cite our paper:
 
 BibTeX:
-
-Kod snippet'i
-
 @article{Gozgoz2025OCB,
   title={A machine learning model for predicting oligoclonal band positivity using routine cerebrospinal fluid and serum biochemical markers},
   author={Gözgöz, Hazar and Orhan, O. and Konuk, B. Akan and Akan, P.},
   journal={American Journal of Clinical Pathology},
   year={2025},
   publisher={Oxford University Press},
-  doi={https://doi.org/10.1093/ajcp/aqaf119} 
+  doi={10.1093/ajcp/aqaf119} 
 }
+
 APA:
 
 Gözgöz, H., Orhan, O., Konuk, B. A., & Akan, P. (2025). A machine learning model for predicting oligoclonal band positivity using routine cerebrospinal fluid and serum biochemical markers. American Journal of Clinical Pathology.
