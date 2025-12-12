@@ -1,76 +1,35 @@
-# A Machine Learning Model for Predicting Oligoclonal Band Positivity
+# OCB Prediction ML: A Machine Learning Pipeline for CSF Analysis
 
-This repository contains the Python scripts for the study titled "An Artificial Intelligence Model for Predicting Oligoclonal Band (OCB) Positivity Using Routine CSF and Serum Biochemical Markers".
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Published in AJCP](https://img.shields.io/badge/Published%20in-AJCP-red)]([https://academic.oup.com/ajcp](https://doi.org/10.1093/ajcp/aqaf119))
 
-The project is structured as a multi-stage machine learning pipeline that proceeds from a comprehensive screening of multiple algorithms to the development and validation of a final, optimized ensemble model named SYNAPSI.
+## Overview
+This repository contains the official implementation of the machine learning pipeline described in the paper: **"A Machine Learning Model for Predicting Oligoclonal Band Positivity Using Routine Cerebrospinal Fluid and Serum Biochemical Markers"**, published in the *American Journal of Clinical Pathology (AJCP)*.
 
-## Workflow Overview
+The project develops **SYNAPSI**, a weighted soft-voting ensemble model designed to predict Oligoclonal Band (OCB) positivity using cost-effective and routine laboratory parameters, offering a rapid screening tool for neuroinflammatory disorders.
 
-The analysis is divided into two main phases, supported by several helper scripts for data preparation and statistical analysis.
+## 📂 Repository Structure
 
-1.  **Phase 1: Comprehensive Algorithm Screening (`1_model_screening.py`)**
-    * This script evaluates six different machine learning architectures on the full feature set using a 5-fold cross-validation methodology.
-    * It generates a comprehensive performance report with 95% confidence intervals for all key metrics.
-    * It also produces comparative SHAP summary plots to interpret the feature importance of the top-performing models.
+The workflow is organized into sequential stages, indicated by the file prefixes:
 
-2.  **Phase 2: Final Ensemble Model Development (`2_final_ensemble_model.py`)**
-    * This script takes the insights from Phase 1 (top 3 models, top 8 features).
-    * It performs hyperparameter optimization for the selected models using Optuna.
-    * It constructs, trains, and evaluates the final weighted soft-voting ensemble model (SYNAPSI) on a sequestered hold-out test set.
+* **`1_initial_model_screening.py`**:  
+    Performs a comprehensive screening of multiple machine learning architectures (e.g., XGBoost, LightGBM, RF, SVM) using 5-fold cross-validation to identify candidate models. Generates initial performance reports and SHAP summary plots.
 
-## Requirements
+* **`2_candidate_evaluation.py`**:  
+    Conducts a deeper evaluation of the top-performing candidate models selected from step 1. Focuses on feature stability and hyperparameter sensitivity before the final ensemble construction.
 
-To run these scripts, you need Python 3.11 and the libraries listed in the `requirements.txt` file. You can install all dependencies using pip:
+* **`3_final_ensemble_model.py`**:  
+    Constructs the final **SYNAPSI** model. This script performs hyperparameter optimization (via Optuna), trains the weighted soft-voting ensemble, and evaluates the final performance on the sequestered hold-out test set.
+
+* **Helper Scripts**:
+    * `helper_add_igg_index.py`: Preprocessing script to calculate IgG Index from raw values.
+    * `helper_evaluate_igg_index.py`: Benchmarks the traditional IgG Index against the ML model.
+    * `helper_statistical_comparison.py`: Performs statistical significance tests (DeLong's test, etc.) to compare ROC-AUC values.
+
+## 🚀 Installation
+
+Ensure you have Python 3.11+ installed. Install the required dependencies using:
+
 ```bash
 pip install -r requirements.txt
-```
-
-## Usage
-
-The scripts should be run in the following logical order. Note that file paths in the scripts may need to be adjusted based on your project structure.
-
-### Step 1: (Optional) Prepare Data
-This helper script calculates the `BOS IgG indeksi` from the raw data and saves it to a new Excel file. This is a prerequisite for the statistical comparison script.
-
-```bash
-python helper_add_igg_index.py [path/to/raw_data.xlsx] [path/to/output_data_with_index.xlsx]
-```
-
-### Step 2: Run Comprehensive Algorithm Screening
-This is the main script for **Phase 1** of the study. It compares 6 ML models and generates the initial performance tables and SHAP plots.
-
-```bash
-python 1_model_screening.py [path/to/data_with_index.xlsx]
-```
-
-### Step 3: Run Final Ensemble Model Development
-This is the main script for **Phase 2** of the study. It trains, optimizes, and evaluates the final SYNAPSI model.
-
-```bash
-python 2_final_ensemble_model.py [path/to/data_with_index.xlsx]
-```
-
-### Step 4: Run Helper Analyses
-These scripts provide supporting evidence for the manuscript.
-
-**A) Evaluate Baseline IgG Index Performance (for Table 3)**
-This script calculates the performance metrics of the conventional IgG index on the same hold-out test set used by the final model, ensuring a fair comparison.
-
-```bash
-python helper_evaluate_igg_index.py [path/to/data_with_index.xlsx]
-```
-
-**B) Perform Statistical Comparison**
-This script statistically compares the final SYNAPSI model against the IgG Index and calculates a p-value for the difference in ROC-AUC performance.
-
-```bash
-python helper_statistical_comparison.py [path/to/data_with_index.xlsx] [path/to/saved_model.pkl]
-```
-
-## Data
-
-Please note that the clinical dataset used for this study contains sensitive patient information and cannot be made publicly available due to privacy regulations and ethical committee restrictions. The code is provided for methodological transparency and reproducibility.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
